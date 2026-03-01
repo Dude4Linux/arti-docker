@@ -37,6 +37,7 @@ PLATFORM=linux/arm64 docker compose build --no-cache
 |---|---|---|
 | `ARTI_VERSION` | `latest` | `latest`, `arti-v2.0.0`, `main` |
 | `PLATFORM` | `linux/amd64` | `linux/amd64`, `linux/arm64`, `linux/arm/v7` |
+| `BIND_ADDR` | `127.0.0.1` | Interface address for published ports; set to LAN IP for network access |
 | `SOCKS_PORT` | `9150` | Host port mapped to the container's SOCKS5 listener |
 | `HTTP_PORT` | `8118` | Host port for Privoxy HTTP proxy (only used when http-proxy profile is active) |
 | `COMPOSE_PROFILES` | *(unset)* | Set to `http-proxy` to enable the Privoxy service |

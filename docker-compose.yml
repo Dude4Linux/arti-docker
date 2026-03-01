@@ -6,7 +6,7 @@ services:
         VERSION: "${ARTI_VERSION:-latest}"
     platform: "${PLATFORM:-linux/amd64}"
     ports:
-      - "${SOCKS_PORT:-9150}:${SOCKS_PORT:-9150}"
+      - "${BIND_ADDR:-127.0.0.1}:${SOCKS_PORT:-9150}:${SOCKS_PORT:-9150}"
     environment:
       - SOCKS_PORT=${SOCKS_PORT:-9150}
     volumes:
@@ -24,7 +24,7 @@ services:
       dockerfile: docker/Dockerfile.privoxy
     profiles: [http-proxy]
     ports:
-      - "${HTTP_PORT:-8118}:${HTTP_PORT:-8118}"
+      - "${BIND_ADDR:-127.0.0.1}:${HTTP_PORT:-8118}:${HTTP_PORT:-8118}"
     environment:
       - HTTP_PORT=${HTTP_PORT:-8118}
       - SOCKS_PORT=${SOCKS_PORT:-9150}
