@@ -144,6 +144,70 @@ export HTTPS_PROXY=http://127.0.0.1:8118
 curl https://check.torproject.org/api/ip
 ```
 
+## Benchmarking
+
+`bench/tor-bench.py` measures circuit-setup latency, exit-IP diversity, and
+throughput. It works against this project or the Tor proxy in any other Docker
+Compose stack — just point it at the right address.
+
+### Setup
+
+```bash
+cd bench
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### Running
+
+```bash
+# SOCKS5 — arti (this project)
+python tor-bench.py --socks5 127.0.0.1:9150 --count 30
+
+# HTTP — Privoxy → Arti (this project, requires http-proxy profile)
+python tor-bench.py --http 127.0.0.1:8118 --count 30
+
+# SOCKS5 — amass tor-proxy (port 9050, run from the amass network or after publishing the port)
+python tor-bench.py --socks5 127.0.0.1:9050 --count 30
+
+# Longer run with a pause between requests and CSV output for further analysis
+python tor-bench.py --socks5 127.0.0.1:9150 --count 100 --delay 2 --csv results.csv
+```
+
+### Options
+
+| Flag | Default | Description |
+|---|---|---|
+| `--socks5 HOST:PORT` | — | SOCKS5 proxy target (mutually exclusive with `--http`) |
+| `--http HOST:PORT` | — | HTTP proxy target (mutually exclusive with `--socks5`) |
+| `--count N` | `20` | Number of requests |
+| `--timeout S` | `30` | Per-request timeout in seconds |
+| `--delay S` | `0` | Pause between requests in seconds |
+| `--csv FILE` | — | Write per-request data to a CSV file |
+
+### What is measured
+
+Each request fetches `https://check.torproject.org/api/ip` through the proxy. For
+SOCKS5 targets, a unique credential pair is sent with each connection so that
+Tor/Arti assigns it a fresh circuit (stream isolation), giving a true measure of
+circuit-establishment cost rather than reuse latency.
+
+HTTP proxy targets (Privoxy) cannot carry isolation credentials, so Arti reuses
+circuits across connections. Expect near-100% circuit reuse and a single exit IP in
+`--http` mode — this is normal and shows the difference in isolation between the two
+proxy paths.
+
+**Report includes:**
+
+- Connections/min and failures/min
+- Success rate
+- Latency distribution: min / mean / median / stdev / p95 / p99 / max
+- Unique exit IP count and average hits per exit
+- Circuit-reuse percentage (consecutive requests that returned the same exit IP)
+- Top exit IPs with hit counts
+- Failure breakdown by error type
+
 ## Shutdown and removal
 
 ```bash

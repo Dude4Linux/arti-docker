@@ -1,2 +1,5 @@
 # Local environment — copy .env.template to .env and customise
 .env
+
+# Benchmark virtualenv
+bench/.venv
