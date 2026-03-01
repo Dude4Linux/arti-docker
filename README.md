@@ -162,17 +162,23 @@ pip install -r requirements.txt
 ### Running
 
 ```bash
-# SOCKS5 — arti (this project)
-python tor-bench.py --socks5 127.0.0.1:9150 --count 30
+# SOCKS5 — arti (this project), fixed count
+python tor-bench.py --socks5 127.0.0.1:9150 --count 50
 
-# HTTP — Privoxy → Arti (this project, requires http-proxy profile)
+# SOCKS5 — arti, run for a fixed duration
+python tor-bench.py --socks5 127.0.0.1:9150 --duration 120
+
+# SOCKS5 — concurrent requests for throughput measurement
+python tor-bench.py --socks5 127.0.0.1:9150 --count 40 --concurrency 5
+
+# HTTP — Privoxy → Arti (requires http-proxy profile)
 python tor-bench.py --http 127.0.0.1:8118 --count 30
 
 # SOCKS5 — amass tor-proxy (port 9050, run from the amass network or after publishing the port)
 python tor-bench.py --socks5 127.0.0.1:9050 --count 30
 
-# Longer run with a pause between requests and CSV output for further analysis
-python tor-bench.py --socks5 127.0.0.1:9150 --count 100 --delay 2 --csv results.csv
+# Save raw per-request data to CSV for further analysis
+python tor-bench.py --socks5 127.0.0.1:9150 --count 100 --csv results.csv
 ```
 
 ### Options
@@ -181,9 +187,11 @@ python tor-bench.py --socks5 127.0.0.1:9150 --count 100 --delay 2 --csv results.
 |---|---|---|
 | `--socks5 HOST:PORT` | — | SOCKS5 proxy target (mutually exclusive with `--http`) |
 | `--http HOST:PORT` | — | HTTP proxy target (mutually exclusive with `--socks5`) |
-| `--count N` | `20` | Number of requests |
+| `--count N` | `20` | Stop after N requests (mutually exclusive with `--duration`) |
+| `--duration S` | — | Stop after S seconds — sequential mode only (mutually exclusive with `--count`) |
+| `--concurrency N` | `1` | Number of parallel workers — requires `--count` |
 | `--timeout S` | `30` | Per-request timeout in seconds |
-| `--delay S` | `0` | Pause between requests in seconds |
+| `--delay S` | `0` | Pause between requests in seconds — sequential mode only |
 | `--csv FILE` | — | Write per-request data to a CSV file |
 
 ### What is measured
@@ -191,20 +199,22 @@ python tor-bench.py --socks5 127.0.0.1:9150 --count 100 --delay 2 --csv results.
 Each request fetches `https://check.torproject.org/api/ip` through the proxy. For
 SOCKS5 targets, a unique credential pair is sent with each connection so that
 Tor/Arti assigns it a fresh circuit (stream isolation), giving a true measure of
-circuit-establishment cost rather than reuse latency.
+circuit-establishment cost rather than reuse latency. Progress lines include a live
+circuits/min counter that updates as results come in.
 
-HTTP proxy targets (Privoxy) cannot carry isolation credentials, so Arti reuses
-circuits across connections. Expect near-100% circuit reuse and a single exit IP in
-`--http` mode — this is normal and shows the difference in isolation between the two
-proxy paths.
+HTTP proxy targets (Privoxy) cannot carry per-request isolation credentials —
+Privoxy's `forward-socks5t` directive supports static credentials only. Arti
+therefore reuses circuits across connections. Expect near-100% circuit reuse and a
+single exit IP in `--http` mode. There is no Privoxy configuration that changes this.
 
 **Report includes:**
 
-- Connections/min and failures/min
+- Circuits/min and failures/min
 - Success rate
 - Latency distribution: min / mean / median / stdev / p95 / p99 / max
 - Unique exit IP count and average hits per exit
-- Circuit-reuse percentage (consecutive requests that returned the same exit IP)
+- First repeat: which request number first returned a previously seen exit IP
+- Consecutive circuit-reuse percentage
 - Top exit IPs with hit counts
 - Failure breakdown by error type
 
