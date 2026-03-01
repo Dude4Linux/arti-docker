@@ -31,14 +31,17 @@ PLATFORM=linux/arm64 docker compose build --no-cache
 
 ## Configuration
 
-`.env` exposes two knobs:
+`.env` exposes three knobs:
 
-| Variable | Default | Options |
+| Variable | Default | Notes |
 |---|---|---|
 | `ARTI_VERSION` | `latest` | `latest`, `arti-v2.0.0`, `main` |
 | `PLATFORM` | `linux/amd64` | `linux/amd64`, `linux/arm64`, `linux/arm/v7` |
+| `SOCKS_PORT` | `9150` | Host port mapped to the container's SOCKS5 listener |
 
 `latest` resolves to the most recent `arti-v*` release tag via `git ls-remote` at build time. Peeled tag entries (`^{}`) are excluded before sorting to avoid corrupting version resolution.
+
+`SOCKS_PORT` is injected at container startup via `docker/entrypoint.sh`, which substitutes the value into `arti.toml` and writes the result to `/tmp/arti.toml` before exec-ing Arti. Changing `SOCKS_PORT` requires only a container restart, not a rebuild.
 
 ## Cargo Features Used
 
@@ -67,12 +70,12 @@ Arti's `fs-mistrust` crate enforces strict checks on the config file. Both condi
 1. The file must **not** be group- or world-writable → `chmod 0640`
 2. The running user (`_arti`) must be able to **read** it → `chown root:_arti`
 
-The Dockerfile applies both: `chown root:_arti /etc/arti/arti.toml && chmod 0640 /etc/arti/arti.toml`
+The Dockerfile applies both to the template: `chown root:_arti /etc/arti/arti.toml && chmod 0640 /etc/arti/arti.toml`. The runtime config written to `/tmp/arti.toml` by `entrypoint.sh` also gets `chmod 0640` and is owned by `_arti`, satisfying both conditions.
 
 ## arti.toml Notes
 
 - `port_info_file` must be set explicitly to a path under `/var/lib/arti`. If omitted, Arti defaults to `${HOME}/.local/share/arti/public/port_info.json` — which fails because `_arti` has no home directory.
-- `socks_listen = "0.0.0.0:9150"` — listens on all interfaces inside the container (required for the host port mapping to work)
+- `socks_listen = "0.0.0.0:${SOCKS_PORT}"` — template placeholder substituted at startup by `entrypoint.sh`; listens on all interfaces inside the container (required for the host port mapping to work)
 
 ## Arti Architecture (relevant to configuration)
 

@@ -6,7 +6,9 @@ services:
         VERSION: "${ARTI_VERSION:-latest}"
     platform: "${PLATFORM:-linux/amd64}"
     ports:
-      - "9150:9150"
+      - "${SOCKS_PORT:-9150}:${SOCKS_PORT:-9150}"
+    environment:
+      - SOCKS_PORT=${SOCKS_PORT:-9150}
     volumes:
       - arti-cache:/var/cache/arti
       - arti-state:/var/lib/arti

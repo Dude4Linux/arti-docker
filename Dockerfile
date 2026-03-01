@@ -59,7 +59,11 @@ COPY docker/arti.toml /etc/arti/arti.toml
 # fs-mistrust: must not be group/world-writable; _arti user must be able to read it
 RUN chown root:_arti /etc/arti/arti.toml && chmod 0640 /etc/arti/arti.toml
 
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
 USER _arti
+# SOCKS_PORT is configurable at runtime via the SOCKS_PORT env var (default: 9150)
 EXPOSE 9150
 
-ENTRYPOINT ["/usr/local/bin/arti", "--config", "/etc/arti/arti.toml", "proxy"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
