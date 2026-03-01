@@ -18,6 +18,20 @@ services:
         hard: 16384
     restart: unless-stopped
 
+  privoxy:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.privoxy
+    profiles: [http-proxy]
+    ports:
+      - "${HTTP_PORT:-8118}:${HTTP_PORT:-8118}"
+    environment:
+      - HTTP_PORT=${HTTP_PORT:-8118}
+      - SOCKS_PORT=${SOCKS_PORT:-9150}
+    depends_on:
+      - arti
+    restart: unless-stopped
+
 volumes:
   arti-cache:
   arti-state:

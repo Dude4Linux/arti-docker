@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Repo Is
 
-A Docker setup for running [Arti](https://gitlab.torproject.org/tpo/core/arti) — Tor reimplemented in Rust — as a SOCKS5 proxy on port 9150. The build pulls source from the upstream GitLab repo at build time (no local Rust code).
+A Docker setup for running [Arti](https://gitlab.torproject.org/tpo/core/arti) — Tor reimplemented in Rust — as a SOCKS5 proxy on port 9150, with an optional Privoxy HTTP proxy layer. The build pulls source from the upstream GitLab repo at build time (no local Rust code).
 
 ## Commands
 
@@ -31,13 +31,15 @@ PLATFORM=linux/arm64 docker compose build --no-cache
 
 ## Configuration
 
-`.env` exposes three knobs:
+`.env` exposes these knobs:
 
 | Variable | Default | Notes |
 |---|---|---|
 | `ARTI_VERSION` | `latest` | `latest`, `arti-v2.0.0`, `main` |
 | `PLATFORM` | `linux/amd64` | `linux/amd64`, `linux/arm64`, `linux/arm/v7` |
 | `SOCKS_PORT` | `9150` | Host port mapped to the container's SOCKS5 listener |
+| `HTTP_PORT` | `8118` | Host port for Privoxy HTTP proxy (only used when http-proxy profile is active) |
+| `COMPOSE_PROFILES` | *(unset)* | Set to `http-proxy` to enable the Privoxy service |
 
 `latest` resolves to the most recent `arti-v*` release tag via `git ls-remote` at build time. Peeled tag entries (`^{}`) are excluded before sorting to avoid corrupting version resolution.
 
@@ -76,6 +78,23 @@ The Dockerfile applies both to the template: `chown root:_arti /etc/arti/arti.to
 
 - `port_info_file` must be set explicitly to a path under `/var/lib/arti`. If omitted, Arti defaults to `${HOME}/.local/share/arti/public/port_info.json` — which fails because `_arti` has no home directory.
 - `socks_listen = "0.0.0.0:${SOCKS_PORT}"` — template placeholder substituted at startup by `entrypoint.sh`; listens on all interfaces inside the container (required for the host port mapping to work)
+
+## Privoxy HTTP Proxy (Optional)
+
+Privoxy bridges HTTP proxy clients to Arti's SOCKS5 tunnel. Many tools honour `HTTP_PROXY`/`HTTPS_PROXY` env vars but don't speak SOCKS5; Privoxy handles the translation.
+
+**Architecture**: `client → HTTP → Privoxy:8118 → SOCKS5 → Arti:9150 → Tor`
+
+**Enable**: uncomment `COMPOSE_PROFILES=http-proxy` in `.env`, then `docker compose up -d`.
+
+**Files**:
+- `docker/Dockerfile.privoxy` — Alpine image with Privoxy
+- `docker/privoxy.conf` — config template (`${HTTP_PORT}` / `${SOCKS_PORT}` placeholders)
+- `docker/privoxy-entrypoint.sh` — substitutes vars at startup, exec's `privoxy --no-daemon`
+
+`forward-socks5t` (not `forward-socks5`) is used so DNS resolution happens inside the Tor network (better privacy).
+
+Privoxy runs with no action/filter files — pure pass-through forwarding only.
 
 ## Arti Architecture (relevant to configuration)
 
