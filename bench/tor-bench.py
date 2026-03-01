@@ -5,14 +5,13 @@ tor-bench — Benchmark a Tor SOCKS5 or HTTP proxy.
 Measures circuit-setup latency, exit-IP diversity, and throughput by
 repeatedly fetching https://check.torproject.org/api/ip through the proxy.
 
-For SOCKS5 targets, each request uses a unique credential pair so that
-Tor/Arti assigns it a fresh circuit (stream isolation), giving a true
-measure of circuit-establishment cost rather than reuse latency.
+Each request uses a unique credential pair so that Arti assigns it a fresh
+Tor circuit (stream isolation), giving a true measure of circuit-establishment
+cost rather than reuse latency.
 
-HTTP proxy targets (e.g. Privoxy) cannot carry per-request credentials;
-Arti reuses circuits across connections, so expect near-100% circuit reuse
-in --http mode. There is no Privoxy configuration that changes this —
-forward-socks5t supports static credentials only, not per-request ones.
+  SOCKS5:  credentials embedded in the proxy URL  socks5h://id:id@host:port
+  HTTP:    credentials sent as Proxy-Authorization: Basic header, which
+           tor-http-proxy decodes and forwards to Arti as SOCKS5 auth
 
 Usage:
   # sequential, fixed count
@@ -55,18 +54,20 @@ def build_proxies(args, circuit_id: str) -> dict:
     """
     Return a requests proxies dict for one request.
 
-    SOCKS5: embed a unique username:password so Tor treats this stream as
-    isolated from all others, guaranteeing a fresh circuit each time.
+    Both modes embed a unique circuit_id as credentials so Arti assigns each
+    request its own fresh Tor circuit:
 
-    HTTP:   plain proxy URL — Privoxy handles CONNECT internally; circuit
-            isolation is left to Arti's default policy.
+    SOCKS5: credentials in the URL  (socks5h://id:id@host:port)
+    HTTP:   credentials in the URL  (http://id:id@host:port) — requests
+            encodes these as a Proxy-Authorization: Basic header, which
+            tor-http-proxy decodes and forwards to Arti as SOCKS5 auth
     """
     if args.socks5:
         return {"https": f"socks5h://{circuit_id}:{circuit_id}@{args.socks5}",
                 "http":  f"socks5h://{circuit_id}:{circuit_id}@{args.socks5}"}
     else:
-        return {"https": f"http://{args.http}",
-                "http":  f"http://{args.http}"}
+        return {"https": f"http://{circuit_id}:{circuit_id}@{args.http}",
+                "http":  f"http://{circuit_id}:{circuit_id}@{args.http}"}
 
 
 def one_request(args) -> dict:
