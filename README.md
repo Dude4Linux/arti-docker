@@ -15,6 +15,10 @@ client → HTTP   → Privoxy:8118 → Arti:9150 → Tor
 - Docker Engine 24+ with Compose V2 (`docker compose`)
 - x86-64, arm64, or armv7 host (see [Configuration](#configuration))
 
+Rust and Cargo are **not** required on the host. The build uses a multi-stage
+Dockerfile whose first stage is the official `rust` image; all compilation happens
+inside Docker.
+
 ## Installation
 
 ```bash
