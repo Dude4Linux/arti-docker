@@ -38,6 +38,12 @@ RUN cargo build -p arti --locked --release \
     --no-default-features \
     --features "tokio,rustls,dns-proxy,harden,compression,bridge-client,onion-service-client,pt-client,vanguards,static-sqlite"
 
+# Build tor-http-proxy — HTTP CONNECT proxy that forwards Proxy-Authorization
+# credentials as SOCKS5 auth, enabling per-request Tor circuit isolation.
+COPY proxy/ /proxy/
+WORKDIR /proxy
+RUN cargo build --release
+
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
 FROM alpine:3.22
 
@@ -50,7 +56,8 @@ RUN apk add --no-cache \
 RUN addgroup -S _arti && \
     adduser -S -G _arti -H -s /sbin/nologin _arti
 
-COPY --from=builder /build/target/release/arti /usr/local/bin/arti
+COPY --from=builder /build/target/release/arti          /usr/local/bin/arti
+COPY --from=builder /proxy/target/release/tor-http-proxy /usr/local/bin/tor-http-proxy
 
 # Config, cache, and state directories
 RUN mkdir -p /etc/arti /var/lib/arti /var/cache/arti && \
@@ -64,7 +71,7 @@ COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 USER _arti
-# SOCKS_PORT is configurable at runtime via the SOCKS_PORT env var (default: 9150)
-EXPOSE 9150
+# Ports are configurable at runtime via SOCKS_PORT and HTTP_PORT env vars.
+EXPOSE 9150 8118
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
