@@ -1,3 +1,23 @@
+x-security-hardened: &security-hardened
+  cap_drop: [ALL]
+  cap_add: [DAC_OVERRIDE]
+  security_opt: [no-new-privileges:true]
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-client-deploy: &client-deploy
+  resources:
+    limits:
+      cpus: '1.0'
+      memory: 512M
+      pids: 100
+    reservations:
+      memory: 256M
+
 services:
   arti:
     build:
@@ -5,6 +25,8 @@ services:
       args:
         VERSION: "${ARTI_VERSION:-latest}"
     platform: "${PLATFORM:-linux/amd64}"
+    <<: *security-hardened
+    logging: *default-logging
     ports:
       - "${BIND_ADDR:-127.0.0.1}:${SOCKS_PORT:-9150}:${SOCKS_PORT:-9150}"
     environment:
@@ -16,6 +38,12 @@ services:
       nofile:
         soft: 16384
         hard: 16384
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+          pids: 100
     healthcheck:
       test: ["CMD-SHELL", "curl --socks5-hostname 127.0.0.1:$$SOCKS_PORT --max-time 15 -sf https://check.torproject.org/api/ip"]
       start_period: 3m
@@ -30,6 +58,8 @@ services:
       context: .
       dockerfile: docker/Dockerfile.privoxy
     profiles: [http-proxy]
+    <<: *security-hardened
+    logging: *default-logging
     ports:
       - "${BIND_ADDR:-127.0.0.1}:${HTTP_PORT:-8118}:${HTTP_PORT:-8118}"
     environment:
@@ -38,6 +68,12 @@ services:
     depends_on:
       arti:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 64M
+          pids: 50
     healthcheck:
       test: ["CMD-SHELL", "curl --proxy http://127.0.0.1:$$HTTP_PORT --max-time 15 -sf https://check.torproject.org/api/ip"]
       start_period: 30s
