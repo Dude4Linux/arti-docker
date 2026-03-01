@@ -53,6 +53,7 @@ reference for defaults.
 | `BIND_ADDR` | `127.0.0.1` | Interface to bind published ports to (see below) |
 | `SOCKS_PORT` | `9150` | Host port for the SOCKS5 proxy |
 | `HTTP_PORT` | `8118` | Host port for the HTTP CONNECT proxy |
+| `LOG_DRIVER` | *(none)* | Set to `json-file` to enable container logging |
 
 ### BIND_ADDR
 
@@ -65,7 +66,8 @@ BIND_ADDR=192.168.1.100
 ```
 
 > **Warning:** Do not set `BIND_ADDR=0.0.0.0` unless you are behind a firewall.
-> Tor proxy ports should never be exposed to the internet.
+> Exposing the proxy to the internet makes it an open relay — anyone can route
+> arbitrary traffic through your Tor exit bandwidth.
 
 ## Starting and stopping
 
@@ -74,7 +76,8 @@ BIND_ADDR=192.168.1.100
 # source — takes several minutes)
 docker compose up -d
 
-# Follow logs from both processes
+# Enable logging then follow logs from both processes
+LOG_DRIVER=json-file docker compose up -d
 docker compose logs -f
 
 # Check service health
@@ -150,39 +153,42 @@ curl --proxy http://$(uuidgen):x@127.0.0.1:8118 https://check.torproject.org/api
 
 ## Benchmarking
 
-`bench/tor-bench.py` measures circuit-setup latency, exit-IP diversity, and
-throughput. It works against this project or the Tor proxy in any other Docker
-Compose stack — just point it at the right address.
+`bench/tor-bench` measures circuit-setup latency, exit-IP diversity, and throughput.
+It works against this project or the Tor proxy in any other Docker Compose stack —
+just point it at the right address.
 
 ### Setup
 
+Requires Rust and Cargo on the host (only for the benchmark tool — the container
+itself has no such requirement):
+
 ```bash
 cd bench
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+cargo build --release
 ```
+
+The compiled binary is at `bench/target/release/tor-bench`.
 
 ### Running
 
 ```bash
 # SOCKS5 — arti (this project), fixed count
-python tor-bench.py --socks5 127.0.0.1:9150 --count 50
+./target/release/tor-bench --socks5 127.0.0.1:9150 --count 50
 
 # SOCKS5 — arti, run for a fixed duration
-python tor-bench.py --socks5 127.0.0.1:9150 --duration 120
+./target/release/tor-bench --socks5 127.0.0.1:9150 --duration 120
 
 # SOCKS5 — concurrent requests for throughput measurement
-python tor-bench.py --socks5 127.0.0.1:9150 --count 40 --concurrency 5
+./target/release/tor-bench --socks5 127.0.0.1:9150 --count 40 --concurrency 5
 
 # HTTP — tor-http-proxy → Arti (circuit isolation via Proxy-Authorization)
-python tor-bench.py --http 127.0.0.1:8118 --count 30
+./target/release/tor-bench --http 127.0.0.1:8118 --count 30
 
-# SOCKS5 — amass tor-proxy (port 9050, run from the amass network or after publishing the port)
-python tor-bench.py --socks5 127.0.0.1:9050 --count 30
+# SOCKS5 — amass tor-proxy (port 9050)
+./target/release/tor-bench --socks5 127.0.0.1:9050 --count 30
 
 # Save raw per-request data to CSV for further analysis
-python tor-bench.py --socks5 127.0.0.1:9150 --count 100 --csv results.csv
+./target/release/tor-bench --socks5 127.0.0.1:9150 --count 100 --csv results.csv
 ```
 
 ### Options

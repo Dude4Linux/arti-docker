@@ -1,13 +1,9 @@
 x-security-hardened: &security-hardened
   cap_drop: [ALL]
-  cap_add: [DAC_OVERRIDE]
   security_opt: [no-new-privileges:true]
 
 x-logging: &default-logging
-  driver: json-file
-  options:
-    max-size: "10m"
-    max-file: "3"
+  driver: "${LOG_DRIVER:-none}"
 
 x-client-deploy: &client-deploy
   resources:
@@ -33,6 +29,9 @@ services:
     environment:
       - SOCKS_PORT=${SOCKS_PORT:-9150}
       - HTTP_PORT=${HTTP_PORT:-8118}
+    read_only: true
+    tmpfs:
+      - /tmp:size=10m,mode=1777
     volumes:
       - arti-cache:/var/cache/arti
       - arti-state:/var/lib/arti
@@ -46,8 +45,10 @@ services:
           cpus: '0.75'
           memory: 320M
           pids: 150
+    networks:
+      - proxy-net
     healthcheck:
-      test: ["CMD-SHELL", "curl --proxy http://127.0.0.1:$$HTTP_PORT --max-time 15 -sf https://check.torproject.org/api/ip"]
+      test: ["CMD", "/usr/local/bin/health-probe"]
       start_period: 3m
       start_interval: 30s
       interval: 5m
@@ -58,3 +59,12 @@ services:
 volumes:
   arti-cache:
   arti-state:
+
+networks:
+  proxy-net:
+    driver: bridge
+    # internal: false (default) — Arti needs direct internet access to reach
+    # Tor relays.  When integrating with another stack (e.g. Amass), remove
+    # this block and declare proxy-net as an external network instead:
+    #   proxy-net:
+    #     external: true

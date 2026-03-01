@@ -18,9 +18,23 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use std::env;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::time::timeout;
 use tokio_socks::tcp::Socks5Stream;
 
+/// Maximum size of the HTTP request headers we will buffer before
+/// rejecting the connection.
 const MAX_HEADER_BYTES: usize = 16 * 1024;
+
+/// How long to wait for a complete HTTP CONNECT request before
+/// dropping the connection.  Prevents Slowloris-style resource
+/// exhaustion when the proxy is exposed to untrusted clients.
+const HEADER_TIMEOUT_SECS: u64 = 30;
+
+/// SOCKS5 auth sub-negotiation (RFC 1929) encodes username and
+/// password lengths as single bytes; values above 255 would be
+/// silently truncated, potentially collapsing distinct circuit
+/// identities into one.  Reject rather than silently degrade.
+const MAX_CRED_LEN: usize = 255;
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
@@ -65,7 +79,14 @@ async fn tunnel(
     client: &mut TcpStream,
     upstream: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (target, creds) = read_connect(client).await?;
+    // Enforce a deadline on header receipt to prevent slow-client
+    // resource exhaustion.
+    let (target, creds) = timeout(
+        std::time::Duration::from_secs(HEADER_TIMEOUT_SECS),
+        read_connect(client),
+    )
+    .await
+    .unwrap_or_else(|_| Err("timed out waiting for CONNECT headers".into()))?;
 
     let mut server = match &creds {
         Some((user, pass)) => Socks5Stream::connect_with_password(
@@ -146,6 +167,18 @@ async fn read_connect(
                     if let Ok(decoded) = BASE64.decode(b64.trim()) {
                         if let Ok(s) = String::from_utf8(decoded) {
                             if let Some((user, pass)) = s.split_once(':') {
+                                // SOCKS5 RFC 1929: username and password are
+                                // each length-prefixed with a single byte.
+                                // Silently dropping over-length credentials
+                                // would truncate them identically, collapsing
+                                // distinct circuit identities.  Fail loudly.
+                                if user.len() > MAX_CRED_LEN || pass.len() > MAX_CRED_LEN {
+                                    return Err(format!(
+                                        "Proxy-Authorization credentials exceed \
+                                         SOCKS5 limit of {MAX_CRED_LEN} bytes"
+                                    )
+                                    .into());
+                                }
                                 credentials =
                                     Some((user.to_string(), pass.to_string()));
                             }

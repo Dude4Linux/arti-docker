@@ -42,22 +42,22 @@ RUN cargo build -p arti --locked --release \
 # credentials as SOCKS5 auth, enabling per-request Tor circuit isolation.
 COPY proxy/ /proxy/
 WORKDIR /proxy
-RUN cargo build --release
+RUN cargo build --locked --release
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
 FROM alpine:3.22
 
 RUN apk add --no-cache \
     sqlite-libs \
-    ca-certificates \
-    curl
+    ca-certificates
 
 # Mirror the Debian packaging: dedicated _arti user, no shell, no home login
 RUN addgroup -S _arti && \
     adduser -S -G _arti -H -s /sbin/nologin _arti
 
-COPY --from=builder /build/target/release/arti          /usr/local/bin/arti
+COPY --from=builder /build/target/release/arti           /usr/local/bin/arti
 COPY --from=builder /proxy/target/release/tor-http-proxy /usr/local/bin/tor-http-proxy
+COPY --from=builder /proxy/target/release/health-probe   /usr/local/bin/health-probe
 
 # Config, cache, and state directories
 RUN mkdir -p /etc/arti /var/lib/arti /var/cache/arti && \

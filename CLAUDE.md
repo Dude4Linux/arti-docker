@@ -4,26 +4,32 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Repo Is
 
-A Docker setup that builds and runs two Rust binaries in a single container:
+A Docker setup that builds and runs three Rust binaries in a single container:
 
-- **Arti** — Tor reimplemented in Rust, exposes a SOCKS5 proxy on port 9150
-- **tor-http-proxy** — a minimal HTTP CONNECT proxy (written here, in `proxy/`) that forwards `Proxy-Authorization` credentials to Arti as SOCKS5 auth, enabling per-request Tor circuit isolation over HTTP
+- **Arti** — Tor reimplemented in Rust; exposes a SOCKS5 proxy on port 9150
+- **tor-http-proxy** — minimal HTTP CONNECT proxy (`proxy/src/main.rs`) that forwards `Proxy-Authorization` credentials to Arti as SOCKS5 auth, enabling per-request Tor circuit isolation over HTTP
+- **health-probe** — minimal healthcheck binary (`proxy/src/bin/health-probe.rs`) that verifies the full stack by opening a CONNECT tunnel through tor-http-proxy; replaces the previous curl-based healthcheck, eliminating curl from the runtime image
 
-Both binaries are compiled from source inside the Docker builder stage. No Rust toolchain is required on the host.
+All three are compiled from source inside the Docker builder stage. No Rust toolchain is required on the host for running the container.
 
 ## Repository Layout
 
 ```
 Dockerfile              Multi-stage build: Rust builder → Alpine runtime
-proxy/                  tor-http-proxy Rust crate (built alongside Arti)
+proxy/                  Cargo crate — tor-http-proxy + health-probe
   Cargo.toml
-  src/main.rs
+  Cargo.lock            Committed; enables --locked builds for reproducibility
+  src/
+    main.rs             tor-http-proxy binary
+    bin/
+      health-probe.rs   healthcheck binary (used by Docker HEALTHCHECK)
 docker/
   arti.toml             Config template (${SOCKS_PORT} substituted at startup)
-  entrypoint.sh         Starts both processes; supervision loop exits if either dies
-bench/
-  tor-bench.py          Latency/throughput benchmark; supports SOCKS5 and HTTP
-  requirements.txt
+  entrypoint.sh         Validates ports; starts both processes; supervision loop
+bench/                  Rust benchmark crate (built locally, not in Docker)
+  Cargo.toml
+  Cargo.lock
+  src/main.rs           tor-bench binary
 .env.template           Canonical defaults — copy to .env on install
 docker-compose.yml      Single arti service; publishes both ports
 ```
@@ -37,7 +43,8 @@ docker compose up -d
 # Build without cache (e.g. after changing VERSION or proxy source)
 docker compose build --no-cache
 
-# Follow logs (both Arti and tor-http-proxy write to stdout/stderr)
+# Enable logging then follow logs (default log driver is 'none')
+LOG_DRIVER=json-file docker compose up -d
 docker compose logs -f
 
 # Stop and remove containers (volumes are preserved)
@@ -49,6 +56,11 @@ docker compose down -v
 # Multi-arch build (requires QEMU binfmt registered)
 docker run --privileged --rm tonistiigi/binfmt --install all
 PLATFORM=linux/arm64 docker compose build --no-cache
+
+# Build and run the benchmark locally
+cd bench && cargo build --release
+./target/release/tor-bench --socks5 127.0.0.1:9150 --count 50
+./target/release/tor-bench --http   127.0.0.1:8118 --count 50
 ```
 
 ## Configuration
@@ -59,11 +71,12 @@ PLATFORM=linux/arm64 docker compose build --no-cache
 |---|---|---|
 | `ARTI_VERSION` | `latest` | `latest`, `arti-v2.0.0`, `main` |
 | `PLATFORM` | `linux/amd64` | `linux/amd64`, `linux/arm64`, `linux/arm/v7` |
-| `BIND_ADDR` | `127.0.0.1` | Interface address for published ports; set to LAN IP for network access |
+| `BIND_ADDR` | `127.0.0.1` | Interface address for published ports; LAN IP for network access |
 | `SOCKS_PORT` | `9150` | Host port mapped to the container's SOCKS5 listener |
 | `HTTP_PORT` | `8118` | Host port mapped to the container's HTTP CONNECT listener |
+| `LOG_DRIVER` | *(unset)* | `json-file` to enable logging; unset = `none` (no disk writes) |
 
-`latest` resolves to the most recent `arti-v*` release tag via `git ls-remote` at build time. Peeled tag entries (`^{}`) are excluded before sorting to avoid corrupting version resolution.
+`latest` resolves to the most recent `arti-v*` release tag via `git ls-remote` at build time.
 
 Both `SOCKS_PORT` and `HTTP_PORT` are injected at container startup via `docker/entrypoint.sh`. Changing either requires only a container restart, not a rebuild.
 
@@ -73,41 +86,65 @@ Both `SOCKS_PORT` and `HTTP_PORT` are injected at container startup via `docker/
 tokio,rustls,dns-proxy,harden,compression,bridge-client,onion-service-client,pt-client,vanguards,static-sqlite
 ```
 
-- **`rustls`** (with `--no-default-features`): pure-Rust TLS — eliminates the OpenSSL/libssl system dependency on musl/Alpine
-- **`static-sqlite`**: bundles and compiles SQLite from source — eliminates the `libsqlite3` system dependency
-- Both are required for static linking on Alpine; without them the linker fails with `-lssl`/`-lcrypto`/`-lsqlite3` errors
+- **`rustls`** (with `--no-default-features`): pure-Rust TLS — eliminates the OpenSSL/libssl dependency on musl/Alpine
+- **`static-sqlite`**: bundles SQLite from source — eliminates the `libsqlite3` dependency
+- Both required for static linking on Alpine; without them the linker fails with `-lssl`/`-lcrypto`/`-lsqlite3` errors
 
-## tor-http-proxy (proxy/)
+## tor-http-proxy (`proxy/src/main.rs`)
 
-Minimal HTTP CONNECT proxy (~130 lines of Rust). Dependencies: `tokio`, `tokio-socks`, `base64`.
+Minimal HTTP CONNECT proxy. Dependencies: `tokio`, `tokio-socks`, `base64`.
 
-**Flow for each request:**
-1. Accept TCP connection from client
-2. Read HTTP headers until `\r\n\r\n`
+**Per-request flow:**
+1. Accept TCP connection
+2. Read headers with a 30-second timeout (Slowloris mitigation)
 3. Verify method is `CONNECT`; extract `host:port` target
-4. If `Proxy-Authorization: Basic <b64>` is present, decode to `user:pass`
+4. If `Proxy-Authorization: Basic <b64>` is present, decode to `user:pass`; reject credentials exceeding 255 bytes (SOCKS5 RFC 1929 limit — prevents silent truncation from collapsing circuit identities)
 5. Open SOCKS5 connection to Arti (`127.0.0.1:SOCKS_PORT`) with those credentials
-6. Send `HTTP/1.1 200 Connection Established` to client
-7. `copy_bidirectional` for the lifetime of the tunnel
+6. Send `HTTP/1.1 200 Connection Established`
+7. `copy_bidirectional` for the tunnel lifetime
 
-Without credentials, connects to Arti anonymously (circuit shared with other anonymous streams). With unique credentials per request, Arti assigns a fresh circuit each time.
+Without credentials, connects anonymously (shared circuit). Unique credentials per request → fresh circuit per request.
 
-Configuration via environment variables: `HTTP_PORT` (listen port), `SOCKS_PORT` (upstream).
+## health-probe (`proxy/src/bin/health-probe.rs`)
+
+Replaces the former `curl` healthcheck. Uses only `tokio` — no new dependencies.
+
+Sends `CONNECT check.torproject.org:443` to tor-http-proxy; a `200` response confirms the full stack (tor-http-proxy → Arti → Tor relay → exit node → target) is functional. Exits 0 (healthy) or 1 (unhealthy). Configured via `HTTP_PORT` and `HEALTH_TIMEOUT` env vars.
 
 ## Entrypoint and Process Supervision
 
 `docker/entrypoint.sh` runs as `_arti`:
-1. Substitutes `${SOCKS_PORT}` in the config template → `/tmp/arti.toml`
-2. Starts Arti in the background; records PID
-3. Starts tor-http-proxy in the background; records PID
-4. Traps SIGTERM/SIGINT to cleanly terminate both children
-5. Polls both PIDs every 5 seconds; if either exits, kills the other and exits with code 1 so Docker restarts the container
+1. Validates `SOCKS_PORT` and `HTTP_PORT` are numeric (prevents sed injection)
+2. Substitutes `${SOCKS_PORT}` in the config template → `/tmp/arti.toml`
+3. Installs SIGTERM/SIGINT trap **before** starting children (closes race window)
+4. Starts Arti in the background; records PID
+5. Starts tor-http-proxy in the background; records PID
+6. Polls both PIDs every 5 seconds; if either exits, kills the other and exits with code 1 so Docker restarts the container
+
+## Docker Compose Hardening
+
+Current hardening applied:
+
+| Control | Value |
+|---|---|
+| `cap_drop` | ALL (no Linux capabilities) |
+| `no-new-privileges` | true |
+| `USER` | `_arti` (non-root) |
+| `read_only` | true (root filesystem read-only) |
+| `/tmp` | tmpfs (10 MiB) — only writable path outside named volumes |
+| `BIND_ADDR` | `127.0.0.1` by default (loopback only) |
+| CPU / memory / PID | limits applied |
+| `nofile` ulimit | 16384 |
+| Log driver | `none` by default (no disk writes) |
+| Network | isolated `proxy-net` bridge (not on Docker's default bridge) |
+
+**Network note**: the container is on a dedicated `proxy-net` bridge. When integrating with another stack (e.g. Amass), remove the `proxy-net` definition from this compose file and declare it as `external: true`, pointing to the shared network in the other stack.
 
 ## Runtime Image Notes
 
-The runtime stage is `alpine:3.22` (not scratch) to include `sqlite-libs`, `ca-certificates`, and `curl` (used by the healthcheck).
+The runtime stage is `alpine:3.22` to include `sqlite-libs` and `ca-certificates`. `curl` is **not** installed — the healthcheck uses the compiled `health-probe` binary instead.
 
-`_arti` system user mirrors Debian packaging: no home directory (`-H`), no login shell (`/sbin/nologin`). Both Arti and tor-http-proxy run as this user.
+`_arti` system user mirrors Debian packaging: no home directory (`-H`), no login shell (`/sbin/nologin`).
 
 Persistent Docker volumes:
 - `arti-cache` → `/var/cache/arti` — bootstrapped directory info (microdescriptors, consensus)
@@ -115,25 +152,25 @@ Persistent Docker volumes:
 
 ## fs-mistrust File Permission Rules
 
-Arti's `fs-mistrust` crate enforces strict checks on the config file. Both conditions must hold or Arti exits immediately:
+Arti's `fs-mistrust` crate enforces strict checks on the config file:
 
-1. The file must **not** be group- or world-writable → `chmod 0640`
-2. The running user (`_arti`) must be able to **read** it → `chown root:_arti`
+1. File must **not** be group- or world-writable → `chmod 0640`
+2. Running user (`_arti`) must be able to **read** it → `chown root:_arti`
 
-The Dockerfile applies both to the template: `chown root:_arti /etc/arti/arti.toml && chmod 0640 /etc/arti/arti.toml`. The runtime config written to `/tmp/arti.toml` by `entrypoint.sh` also gets `chmod 0640` and is owned by `_arti`, satisfying both conditions.
+The Dockerfile applies both to the template. The runtime config at `/tmp/arti.toml` also gets `chmod 0640` and is owned by `_arti`.
 
 ## arti.toml Notes
 
-- `port_info_file` must be set explicitly to a path under `/var/lib/arti`. If omitted, Arti defaults to `${HOME}/.local/share/arti/public/port_info.json` — which fails because `_arti` has no home directory.
-- `socks_listen = "0.0.0.0:${SOCKS_PORT}"` — template placeholder substituted at startup by `entrypoint.sh`; listens on all interfaces inside the container (required for the host port mapping to work)
+- `port_info_file` must be set explicitly to `/var/lib/arti/port_info.json`; if omitted, Arti defaults to `${HOME}/.local/share/…` which fails because `_arti` has no home directory
+- `socks_listen = "0.0.0.0:${SOCKS_PORT}"` — placeholder substituted at startup; listens on all interfaces inside the container (required for host port mapping)
 
-## Arti Architecture (relevant to configuration)
+## Arti Architecture
 
-- **Multi-identity**: `IsolationToken` / `isolated_client()` provide stream isolation natively; multiple simultaneous identities don't require multiple processes
-- **Multi-threaded**: Tokio thread pool (`TokioTp`), one thread per logical CPU core by default
-- **Circuit rotation**: `max_dirtiness` defaults to 10 minutes; exits are selected with bandwidth-weighted randomness, family and /16-subnet exclusion
-- **Vanguards**: enabled by the `vanguards` feature; three modes — `Disabled`, `Lite`, `Full`
+- **Multi-identity**: `IsolationToken` / `isolated_client()` provide stream isolation natively
+- **Multi-threaded**: Tokio thread pool, one thread per CPU core by default
+- **Circuit rotation**: `max_dirtiness` defaults to 10 minutes; exits selected with bandwidth-weighted randomness, family and /16-subnet exclusion
+- **Vanguards**: enabled; three modes — `Disabled`, `Lite`, `Full`
 
 ## Git Tags
 
-- `privoxy` — last commit before replacing Privoxy with tor-http-proxy; useful baseline for benchmarking comparison
+- `privoxy` — last commit before replacing Privoxy with tor-http-proxy
