@@ -10,28 +10,33 @@ ARG VERSION
 RUN apk add --no-cache \
     git \
     musl-dev \
-    sqlite-dev \
-    openssl-dev \
     perl \
     make \
     build-base
 
-# Resolve "latest" to the most recent arti-v* tag; otherwise use VERSION as-is.
+# Resolve "latest" to the most recent arti-v* tag, then clone.
+# Peeled tag entries (^{}) are excluded before sorting so they don't corrupt the result.
 RUN if [ "$VERSION" = "latest" ]; then \
-        git ls-remote --tags --sort=-v:refname \
+        REF=$(git ls-remote --tags --sort=-version:refname \
             https://gitlab.torproject.org/tpo/core/arti.git 'refs/tags/arti-v*' \
-        | head -1 | sed 's|.*refs/tags/||' > /ref; \
+            | grep -v '\^{}' \
+            | awk 'NR==1{print $2}' \
+            | sed 's|refs/tags/||'); \
     else \
-        echo "$VERSION" > /ref; \
+        REF="$VERSION"; \
     fi && \
-    echo "Building ref: $(cat /ref)"
-
-RUN git clone --depth 1 \
-        --branch "$(cat /ref)" \
+    [ -n "$REF" ] || { echo "ERROR: could not resolve version '${VERSION}'"; exit 1; } && \
+    echo "Cloning ref: ${REF}" && \
+    git clone --depth 1 --branch "$REF" \
         https://gitlab.torproject.org/tpo/core/arti.git /build
 
 WORKDIR /build
-RUN cargo build -p arti --locked --release
+# --no-default-features drops native-tls (needs system OpenSSL) in favour of
+# rustls (pure Rust). static-sqlite bundles and compiles SQLite from source.
+# Both eliminate external C library link dependencies on musl/Alpine.
+RUN cargo build -p arti --locked --release \
+    --no-default-features \
+    --features "tokio,rustls,dns-proxy,harden,compression,bridge-client,onion-service-client,pt-client,vanguards,static-sqlite"
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
 FROM alpine:3.22
@@ -51,6 +56,8 @@ RUN mkdir -p /etc/arti /var/lib/arti /var/cache/arti && \
     chown -R _arti:_arti /var/lib/arti /var/cache/arti
 
 COPY docker/arti.toml /etc/arti/arti.toml
+# fs-mistrust: must not be group/world-writable; _arti user must be able to read it
+RUN chown root:_arti /etc/arti/arti.toml && chmod 0640 /etc/arti/arti.toml
 
 USER _arti
 EXPOSE 9150

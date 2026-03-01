@@ -7,6 +7,7 @@ socks_listen = "0.0.0.0:9150"
 [storage]
 cache_dir = "/var/cache/arti"
 state_dir = "/var/lib/arti"
+port_info_file = "/var/lib/arti/port_info.json"
 
 [logging]
 console = "info"
