@@ -43,7 +43,8 @@ FROM alpine:3.22
 
 RUN apk add --no-cache \
     sqlite-libs \
-    ca-certificates
+    ca-certificates \
+    curl
 
 # Mirror the Debian packaging: dedicated _arti user, no shell, no home login
 RUN addgroup -S _arti && \
