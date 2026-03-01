@@ -1,14 +1,20 @@
 # arti-docker
 
 A Docker setup for running [Arti](https://gitlab.torproject.org/tpo/core/arti) — Tor
-reimplemented in Rust — as a SOCKS5 proxy. Optionally includes a
-[Privoxy](https://www.privoxy.org/) HTTP proxy that forwards traffic through Arti,
-bridging tools that only speak `HTTP_PROXY`/`HTTPS_PROXY`.
+reimplemented in Rust — as both a SOCKS5 proxy and an HTTP CONNECT proxy. Both
+proxies run in a single container. The HTTP proxy (`tor-http-proxy`) is also written
+in Rust and built in the same stage as Arti.
 
 ```
 client → SOCKS5 → Arti:9150 → Tor
-client → HTTP   → Privoxy:8118 → Arti:9150 → Tor
+client → HTTP   → tor-http-proxy:8118 → Arti:9150 → Tor
 ```
+
+**Circuit isolation**: both proxy paths support per-request Tor circuit isolation.
+For SOCKS5, embed unique credentials in the proxy URL (`socks5h://user:pass@…`). For
+HTTP, send a `Proxy-Authorization: Basic` header; `tor-http-proxy` extracts the
+credentials and forwards them to Arti as SOCKS5 auth, so each unique
+username/password gets its own Tor circuit.
 
 ## Requirements
 
@@ -46,8 +52,7 @@ reference for defaults.
 | `PLATFORM` | `linux/amd64` | `linux/amd64`, `linux/arm64`, `linux/arm/v7` |
 | `BIND_ADDR` | `127.0.0.1` | Interface to bind published ports to (see below) |
 | `SOCKS_PORT` | `9150` | Host port for the SOCKS5 proxy |
-| `HTTP_PORT` | `8118` | Host port for the Privoxy HTTP proxy |
-| `COMPOSE_PROFILES` | *(unset)* | Set to `http-proxy` to enable Privoxy |
+| `HTTP_PORT` | `8118` | Host port for the HTTP CONNECT proxy |
 
 ### BIND_ADDR
 
@@ -62,27 +67,14 @@ BIND_ADDR=192.168.1.100
 > **Warning:** Do not set `BIND_ADDR=0.0.0.0` unless you are behind a firewall.
 > Tor proxy ports should never be exposed to the internet.
 
-### Enabling the HTTP proxy (Privoxy)
-
-Uncomment `COMPOSE_PROFILES` in `.env`:
-
-```
-COMPOSE_PROFILES=http-proxy
-```
-
-Privoxy will start alongside Arti and wait until Arti has a working Tor circuit before
-accepting connections.
-
 ## Starting and stopping
 
 ```bash
-# Build images and start (first run compiles Arti from source — takes several minutes)
+# Build images and start (first run compiles Arti and tor-http-proxy from
+# source — takes several minutes)
 docker compose up -d
 
-# With Privoxy enabled
-COMPOSE_PROFILES=http-proxy docker compose up -d
-
-# Follow logs
+# Follow logs from both processes
 docker compose logs -f
 
 # Check service health
@@ -123,10 +115,16 @@ export ALL_PROXY=socks5h://127.0.0.1:9150
 curl https://check.torproject.org/api/ip
 ```
 
-### HTTP proxy (Privoxy)
+Force a fresh Tor circuit per connection by embedding unique credentials:
 
-Any tool that honours `HTTP_PROXY`/`HTTPS_PROXY` can use Privoxy without SOCKS5
-support:
+```bash
+export ALL_PROXY=socks5h://$(uuidgen):x@127.0.0.1:9150
+```
+
+### HTTP proxy (tor-http-proxy)
+
+Any tool that honours `HTTP_PROXY`/`HTTPS_PROXY` can use the HTTP proxy without
+SOCKS5 support:
 
 ```bash
 # Verify traffic exits through Tor
@@ -142,6 +140,12 @@ Configure applications via environment variables:
 export HTTP_PROXY=http://127.0.0.1:8118
 export HTTPS_PROXY=http://127.0.0.1:8118
 curl https://check.torproject.org/api/ip
+```
+
+Force a fresh Tor circuit per connection by sending unique proxy credentials:
+
+```bash
+curl --proxy http://$(uuidgen):x@127.0.0.1:8118 https://check.torproject.org/api/ip
 ```
 
 ## Benchmarking
@@ -171,7 +175,7 @@ python tor-bench.py --socks5 127.0.0.1:9150 --duration 120
 # SOCKS5 — concurrent requests for throughput measurement
 python tor-bench.py --socks5 127.0.0.1:9150 --count 40 --concurrency 5
 
-# HTTP — Privoxy → Arti (requires http-proxy profile)
+# HTTP — tor-http-proxy → Arti (circuit isolation via Proxy-Authorization)
 python tor-bench.py --http 127.0.0.1:8118 --count 30
 
 # SOCKS5 — amass tor-proxy (port 9050, run from the amass network or after publishing the port)
@@ -196,16 +200,11 @@ python tor-bench.py --socks5 127.0.0.1:9150 --count 100 --csv results.csv
 
 ### What is measured
 
-Each request fetches `https://check.torproject.org/api/ip` through the proxy. For
-SOCKS5 targets, a unique credential pair is sent with each connection so that
-Tor/Arti assigns it a fresh circuit (stream isolation), giving a true measure of
-circuit-establishment cost rather than reuse latency. Progress lines include a live
+Each request fetches `https://check.torproject.org/api/ip` through the proxy. A
+unique credential pair is sent with each connection (via SOCKS5 auth or
+`Proxy-Authorization`) so that Arti assigns each request a fresh Tor circuit, giving
+a true measure of circuit-establishment cost. Progress lines include a live
 circuits/min counter that updates as results come in.
-
-HTTP proxy targets (Privoxy) cannot carry per-request isolation credentials —
-Privoxy's `forward-socks5t` directive supports static credentials only. Arti
-therefore reuses circuits across connections. Expect near-100% circuit reuse and a
-single exit IP in `--http` mode. There is no Privoxy configuration that changes this.
 
 **Report includes:**
 
