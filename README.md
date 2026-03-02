@@ -28,7 +28,7 @@ inside Docker.
 ## Installation
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/Dude4Linux/arti-docker.git
 cd arti-docker
 cp .env.template .env
 ```
