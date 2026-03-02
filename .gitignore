@@ -1,5 +1,6 @@
 # Local environment — copy .env.template to .env and customise
 .env
 
-# Benchmark build artifacts
-bench/target
+# Rust build artifacts
+bench/target/
+proxy/target/
