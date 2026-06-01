@@ -1,6 +1,11 @@
 # Local environment — copy .env.template to .env and customise
 .env
 
+# Bridges — copy docker/bridges.txt.template to docker/bridges.txt and
+# add your own bridge lines.  Never commit real bridges; they get
+# scraped from GitHub and blocked within hours.
+docker/bridges.txt
+
 # Rust build artifacts
 bench/target/
 proxy/target/

@@ -49,7 +49,8 @@ FROM alpine:3.22
 
 RUN apk add --no-cache \
     sqlite-libs \
-    ca-certificates
+    ca-certificates \
+    lyrebird
 
 # Mirror the Debian packaging: dedicated _arti user, no shell, no home login
 RUN addgroup -S _arti && \
@@ -66,6 +67,12 @@ RUN mkdir -p /etc/arti /var/lib/arti /var/cache/arti && \
 COPY docker/arti.toml /etc/arti/arti.toml
 # fs-mistrust: must not be group/world-writable; _arti user must be able to read it
 RUN chown root:_arti /etc/arti/arti.toml && chmod 0640 /etc/arti/arti.toml
+
+# Bridges template — overridden at runtime by the host bind-mount in docker-compose.yml.
+# The image ships the comment-only template; real bridges live only on the host
+# (in docker/bridges.txt, gitignored) and are mounted in read-only at runtime.
+COPY docker/bridges.txt.template /etc/arti/bridges.txt
+RUN chown root:_arti /etc/arti/bridges.txt && chmod 0640 /etc/arti/bridges.txt
 
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

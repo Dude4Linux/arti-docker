@@ -31,7 +31,13 @@ inside Docker.
 git clone https://github.com/Dude4Linux/arti-docker.git
 cd arti-docker
 cp .env.template .env
+cp docker/bridges.txt.template docker/bridges.txt
 ```
+
+The `bridges.txt` copy is required even if you don't expect to need bridges
+— `docker-compose.yml` bind-mounts it into the container at startup, so the
+file must exist on the host. Both `.env` and `docker/bridges.txt` are
+gitignored so your customisations are safe from `git pull`.
 
 Edit `.env` to suit your environment (all settings are optional — the defaults work
 out of the box for local use):
@@ -54,6 +60,7 @@ reference for defaults.
 | `SOCKS_PORT` | `9150` | Host port for the SOCKS5 proxy |
 | `HTTP_PORT` | `8118` | Host port for the HTTP CONNECT proxy |
 | `LOG_DRIVER` | *(none)* | Set to `json-file` to enable container logging |
+| `TOR_MODE` | `auto` | `auto` probes for filtering; `direct` forces no bridges; `bridge` forces bridges |
 
 ### BIND_ADDR
 
@@ -68,6 +75,37 @@ BIND_ADDR=192.168.1.100
 > **Warning:** Do not set `BIND_ADDR=0.0.0.0` unless you are behind a firewall.
 > Exposing the proxy to the internet makes it an open relay — anyone can route
 > arbitrary traffic through your Tor exit bandwidth.
+
+## Censored networks (bridges)
+
+Some ISPs — including T-Mobile Home Internet, several carrier-grade-NAT mobile
+operators, and many corporate networks — block direct connections to known Tor
+relay IPs. On such networks Arti pulls the consensus from a fallback directory
+but then can't open channels to any guard, and the container stays unhealthy
+with `Could not connect to guard` warnings in the log.
+
+The container handles this automatically:
+
+1. **At startup**, the entrypoint probes three well-known Tor relay IPs on `:443`.
+2. If any probe succeeds, Arti runs in **direct mode** (no overhead).
+3. If all probes fail, the entrypoint switches to **bridge mode** using
+   `lyrebird` (the modern obfs4proxy) — but only if bridges have been supplied.
+
+Bridges aren't bundled, because Tor bridges are intentionally non-public and
+any default set would be blocked within days. Supply your own:
+
+1. Get bridges from <https://bridges.torproject.org/> (web) or send the body
+   `get transport obfs4` to `bridges@torproject.org` from a Gmail/Riseup
+   address.
+2. Paste the `obfs4 ...` lines into `docker/bridges.txt` (one per line).
+3. `docker compose restart`.
+
+`TOR_MODE` overrides the probe:
+
+- `auto` *(default)* — probe and decide
+- `direct` — never use bridges; fail loudly if direct is filtered
+- `bridge` — always use bridges; skip the probe (saves ~3–9s at startup
+  when you already know you're on a filtered network)
 
 ## Starting and stopping
 

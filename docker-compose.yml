@@ -29,12 +29,17 @@ services:
     environment:
       - SOCKS_PORT=${SOCKS_PORT:-9150}
       - HTTP_PORT=${HTTP_PORT:-8118}
+      - TOR_MODE=${TOR_MODE:-auto}
     read_only: true
     tmpfs:
       - /tmp:size=10m,mode=1777
     volumes:
       - arti-cache:/var/cache/arti
       - arti-state:/var/lib/arti
+      # Bridge lines (one per line, format from bridges.torproject.org).
+      # Only consulted when TOR_MODE=bridge or the startup probe detects
+      # ISP-level Tor filtering.  Read-only inside the container.
+      - ./docker/bridges.txt:/etc/arti/bridges.txt:ro
     ulimits:
       nofile:
         soft: 16384
@@ -63,6 +68,14 @@ volumes:
 networks:
   proxy-net:
     driver: bridge
+    # IPv6 is enabled so Arti can reach IPv6-only Tor bridges and relays.
+    # Docker (27+) auto-manages ip6tables masquerading from the ULA subnet
+    # below to the host's IPv6 address.
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+        - subnet: fd00:a721::/64
     # internal: false (default) — Arti needs direct internet access to reach
     # Tor relays.  When integrating with another stack (e.g. Amass), remove
     # this block and declare proxy-net as an external network instead:

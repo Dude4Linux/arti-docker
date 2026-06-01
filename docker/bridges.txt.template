@@ -1,0 +1,17 @@
+# Tor bridges — one bridge line per row, in the format published by
+# https://bridges.torproject.org/.  Lines beginning with # and blank lines
+# are ignored.  Example:
+#
+#   obfs4 1.2.3.4:443 FINGERPRINT cert=BASE64STUFF iat-mode=0
+#
+# Bridges are only used when the container detects at startup that direct
+# connection to the Tor network is being filtered by your ISP.  On unfiltered
+# networks this file is not consulted and bridges are not started.
+#
+# To obtain bridges:
+#   - Web: https://bridges.torproject.org/
+#   - Email: send "get transport obfs4" to bridges@torproject.org from a
+#     Gmail or Riseup address.
+#
+# After adding bridges, restart the container:
+#   docker compose restart

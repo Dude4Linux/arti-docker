@@ -25,7 +25,9 @@ proxy/                  Cargo crate — tor-http-proxy + health-probe
       health-probe.rs   healthcheck binary (used by Docker HEALTHCHECK)
 docker/
   arti.toml             Config template (${SOCKS_PORT} substituted at startup)
-  entrypoint.sh         Validates ports; starts both processes; supervision loop
+  entrypoint.sh         Validates ports; probes for Tor filtering; starts processes
+  bridges.txt.template  Empty obfs4 bridge file template (committed)
+  bridges.txt           Real bridges (gitignored, host-only, bind-mounted in)
 bench/                  Rust benchmark crate (built locally, not in Docker)
   Cargo.toml
   Cargo.lock
@@ -75,6 +77,7 @@ cd bench && cargo build --release
 | `SOCKS_PORT` | `9150` | Host port mapped to the container's SOCKS5 listener |
 | `HTTP_PORT` | `8118` | Host port mapped to the container's HTTP CONNECT listener |
 | `LOG_DRIVER` | *(unset)* | `json-file` to enable logging; unset = `none` (no disk writes) |
+| `TOR_MODE` | `auto` | `auto` probes for filtering; `direct` forces no bridges; `bridge` forces bridges |
 
 `latest` resolves to the most recent `arti-v*` release tag via `git ls-remote` at build time.
 
@@ -114,12 +117,24 @@ Sends `CONNECT check.torproject.org:443` to tor-http-proxy; a `200` response con
 ## Entrypoint and Process Supervision
 
 `docker/entrypoint.sh` runs as `_arti`:
-1. Validates `SOCKS_PORT` and `HTTP_PORT` are numeric (prevents sed injection)
+1. Validates `SOCKS_PORT`, `HTTP_PORT` are numeric (prevents sed injection) and `TOR_MODE` is `auto|direct|bridge`
 2. Substitutes `${SOCKS_PORT}` in the config template → `/tmp/arti.toml`
-3. Installs SIGTERM/SIGINT trap **before** starting children (closes race window)
-4. Starts Arti in the background; records PID
-5. Starts tor-http-proxy in the background; records PID
-6. Polls both PIDs every 5 seconds; if either exits, kills the other and exits with code 1 so Docker restarts the container
+3. If `TOR_MODE=auto`, probes three known Tor relay IPs on :443 (`171.25.193.9`, `192.42.116.16`, `131.188.40.189`) with `nc -z -w 3`; a single TCP success means direct mode, all-fail means bridge mode. Worst-case latency: 9s. If `TOR_MODE=direct|bridge`, the probe is skipped.
+4. In bridge mode, reads non-comment lines from `/etc/arti/bridges.txt` (bind-mounted from `docker/bridges.txt`) and appends a `[bridges]` + `[[bridges.transports]]` block to `/tmp/arti.toml` with `path = "/usr/bin/lyrebird"`. Exits with a clear error if no bridges are configured.
+5. Installs SIGTERM/SIGINT trap **before** starting children (closes race window)
+6. Starts Arti in the background; records PID
+7. Starts tor-http-proxy in the background; records PID
+8. Polls both PIDs every 5 seconds; if either exits, kills the other and exits with code 1 so Docker restarts the container
+
+## Filter Detection and Bridges
+
+Some ISPs (notably T-Mobile Home Internet, some carrier-grade NAT operators, certain corporate networks) block direct connections to known Tor relay IPs. Arti fetches the consensus from a fallback directory then can't open channels to any guard relay — symptom is endless `Could not connect to guard` warnings in the log.
+
+The entrypoint's startup probe distinguishes this from a general network problem by checking whether *Tor-specific* IPs are blocked while general internet works. When filtered, it switches to bridges (obfs4 pluggable transport via `lyrebird`).
+
+Bridges must be supplied by the user — Tor bridges are intentionally not in the consensus and bundled defaults would be burned quickly. Request from `https://bridges.torproject.org/` or `bridges@torproject.org`, paste into `docker/bridges.txt`, restart container.
+
+The `lyrebird` package (Alpine 3.22 community) replaces the obfs4proxy package — same wire protocol, includes `meek_lite` and `webtunnel` support.
 
 ## Docker Compose Hardening
 
