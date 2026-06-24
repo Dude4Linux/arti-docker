@@ -30,20 +30,26 @@ inside Docker.
 ```bash
 git clone https://github.com/Dude4Linux/arti-docker.git
 cd arti-docker
-cp .env.template .env
-cp docker/bridges.txt.template docker/bridges.txt
+docker/refresh-bridges.sh
+docker compose up -d
 ```
 
-The `bridges.txt` copy is required even if you don't expect to need bridges
-— `docker-compose.yml` bind-mounts it into the container at startup, so the
-file must exist on the host. Both `.env` and `docker/bridges.txt` are
-gitignored so your customisations are safe from `git pull`.
+`refresh-bridges.sh` handles first-time setup automatically:
 
-Edit `.env` to suit your environment (all settings are optional — the defaults work
-out of the box for local use):
+- Copies `.env.template` → `.env` if `.env` does not yet exist
+- Copies `bridges.txt.template` → `docker/bridges.txt` if that file does not yet exist
+- Fetches fresh obfs4 bridges from `bridges.torproject.org` and writes them into
+  `docker/bridges.txt`
+
+Both `.env` and `docker/bridges.txt` are gitignored, so your settings and bridges
+survive `git pull`.
+
+Edit `.env` to suit your environment before starting (all settings are optional —
+the defaults work for local use):
 
 ```bash
 $EDITOR .env
+docker compose up -d
 ```
 
 ## Configuration
@@ -84,23 +90,32 @@ relay IPs. On such networks Arti pulls the consensus from a fallback directory
 but then can't open channels to any guard, and the container stays unhealthy
 with `Could not connect to guard` warnings in the log.
 
-The container handles this automatically:
+The container handles this automatically at every startup:
 
-1. **At startup**, the entrypoint probes three well-known Tor relay IPs on `:443`.
-2. If any probe succeeds, Arti runs in **direct mode** (no overhead).
-3. If all probes fail, the entrypoint switches to **bridge mode** using
-   `lyrebird` (the modern obfs4proxy) — but only if bridges have been supplied.
+1. **Filter detection** — probe three well-known Tor relay IPs on `:443`.
+2. If any probe succeeds → Arti runs in **direct mode** (no overhead).
+3. If all probes fail → switch to **bridge mode** using `lyrebird` (obfs4), then:
+   - If `docker/bridges.txt` has no active lines → fetch fresh bridges from
+     `bridges.torproject.org` automatically.
+   - If every configured bridge is TCP-unreachable → fetch fresh bridges
+     automatically.
+4. **Health monitoring** — run `health-probe` every 5 minutes. After 3
+   consecutive failures the entrypoint exits, Docker restarts the container,
+   and step 3 runs again with the failed bridges already known-blocked.
 
-Bridges aren't bundled, because Tor bridges are intentionally non-public and
-any default set would be blocked within days. Supply your own:
+Bridges are not bundled because any default set would be blocked within days.
+`refresh-bridges.sh` (used during installation) fetches them on demand, and the
+container auto-refreshes them whenever they stop working.
 
-1. Get bridges from <https://bridges.torproject.org/> (web) or send the body
-   `get transport obfs4` to `bridges@torproject.org` from a Gmail/Riseup
-   address.
-2. Paste the `obfs4 ...` lines into `docker/bridges.txt` (one per line).
-3. `docker compose restart`.
+To manually rotate bridges at any time:
 
-`TOR_MODE` overrides the probe:
+```bash
+docker/refresh-bridges.sh          # fetch if needed, restart if running
+docker/refresh-bridges.sh --force  # always fetch fresh, restart
+docker/refresh-bridges.sh --check  # report reachability only, no changes
+```
+
+`TOR_MODE` overrides the filter probe:
 
 - `auto` *(default)* — probe and decide
 - `direct` — never use bridges; fail loudly if direct is filtered

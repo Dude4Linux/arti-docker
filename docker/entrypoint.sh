@@ -123,30 +123,31 @@ esac
 
 if [ "$USE_BRIDGES" = "1" ]; then
     BRIDGES=$(read_bridges || true)
-    if [ -z "$BRIDGES" ]; then
-        cat >&2 <<EOF
-ERROR: bridge mode requested but no bridges are configured.
 
-Request bridges from https://bridges.torproject.org/ (or email
-"get transport obfs4" to bridges@torproject.org from a Gmail/Riseup
-address), then add the bridge lines to docker/bridges.txt and restart
-the container with: docker compose restart
-EOF
-        exit 1
-    fi
-
-    # If every configured bridge is unreachable, fetch fresh ones before
-    # starting Arti.  Fresh lines are written directly into /tmp/arti.toml
-    # for this run; bridges.txt (bind-mounted :ro) is not modified.
-    if bridges_blocked "$BRIDGES"; then
-        echo "entrypoint: all configured bridges are blocked — fetching fresh bridges..."
+    # Fetch fresh bridges when none are configured (first run) or every
+    # configured bridge is TCP-unreachable (blocked).  Fresh lines go
+    # directly into /tmp/arti.toml for this run; bridges.txt is not
+    # modified (it is bind-mounted :ro).
+    if [ -z "$BRIDGES" ] || bridges_blocked "$BRIDGES"; then
+        if [ -z "$BRIDGES" ]; then
+            echo "entrypoint: no bridges configured — fetching from bridges.torproject.org..."
+        else
+            echo "entrypoint: all configured bridges are blocked — fetching fresh bridges..."
+        fi
         FRESH=$(fetch_fresh_bridges)
         if [ -n "$FRESH" ]; then
-            echo "entrypoint: using fresh bridges:"
+            echo "entrypoint: using fetched bridges:"
             echo "$FRESH" | sed 's/^/  /'
             BRIDGES="$FRESH"
+        elif [ -z "$BRIDGES" ]; then
+            cat >&2 <<EOF
+ERROR: no bridges configured and could not fetch any from
+bridges.torproject.org.  Add bridge lines to docker/bridges.txt
+(get them from https://bridges.torproject.org/) and restart.
+EOF
+            exit 1
         else
-            echo "entrypoint: WARNING: could not fetch fresh bridges — proceeding with configured bridges."
+            echo "entrypoint: WARNING: could not fetch fresh bridges — proceeding with blocked bridges."
         fi
     fi
 

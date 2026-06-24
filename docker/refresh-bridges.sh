@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
-# Fetch fresh obfs4 bridges from bridges.torproject.org and restart the arti container.
+# Set up or refresh obfs4 bridges for the arti container.
+#
+# On first run this script bootstraps the two host-side files that are
+# gitignored and must exist before the container starts:
+#
+#   .env              — copied from .env.template if absent
+#   docker/bridges.txt — populated with fresh bridges if empty or all blocked
+#
+# Afterwards the container is restarted (if running) so the new bridges
+# take effect immediately.
 #
 # Usage:
-#   refresh-bridges.sh            — refresh only if all current bridges are TCP-unreachable
-#   refresh-bridges.sh --force    — always refresh regardless of bridge status
-#   refresh-bridges.sh --check    — report reachability of current bridges and exit
+#   refresh-bridges.sh            — setup/refresh if needed (safe to re-run)
+#   refresh-bridges.sh --force    — always fetch fresh bridges
+#   refresh-bridges.sh --check    — report bridge reachability and exit
 
 set -euo pipefail
 
@@ -14,12 +23,26 @@ COMPOSE_DIR="$SCRIPT_DIR/.."
 
 log() { echo "$(date -Iseconds) refresh-bridges: $*"; }
 
+# --- Bootstrap .env ---
+if [[ ! -f "$COMPOSE_DIR/.env" ]]; then
+    log ".env not found — copying from .env.template"
+    cp "$COMPOSE_DIR/.env.template" "$COMPOSE_DIR/.env"
+    log "Review $COMPOSE_DIR/.env and adjust settings if needed (defaults work for local use)."
+fi
+
+# --- Bootstrap bridges.txt ---
+if [[ ! -f "$BRIDGES_FILE" ]]; then
+    log "bridges.txt not found — copying from template"
+    cp "$SCRIPT_DIR/bridges.txt.template" "$BRIDGES_FILE"
+fi
+
 # --- Bridge reachability check ---
-# Returns 0 (true) if every active bridge line is TCP-unreachable.
-bridges_all_blocked() {
+# Returns 0 (true) if there are no active bridge lines OR every active
+# bridge is TCP-unreachable; 1 if at least one bridge responds.
+needs_refresh() {
     local reachable=0 checked=0
+
     while IFS= read -r line; do
-        # Match IPv4:port or [IPv6]:port (second field of the bridge line)
         if [[ "$line" =~ ^obfs4[[:space:]]\[([^\]]+)\]:([0-9]+) ]]; then
             ip="${BASH_REMATCH[1]}"; port="${BASH_REMATCH[2]}"
         elif [[ "$line" =~ ^obfs4[[:space:]]([0-9.]+):([0-9]+) ]]; then
@@ -35,7 +58,9 @@ bridges_all_blocked() {
             log "  $ip:$port unreachable"
         fi
     done < <(grep -v '^[[:space:]]*#' "$BRIDGES_FILE" | grep -v '^[[:space:]]*$')
-    [[ $checked -gt 0 && $reachable -eq 0 ]]
+
+    # Need refresh when: nothing configured yet, or everything is blocked.
+    [[ $checked -eq 0 || $reachable -eq 0 ]]
 }
 
 # --- Fetch bridges from bridges.torproject.org ---
@@ -81,14 +106,26 @@ write_bridges() {
     mv "${BRIDGES_FILE}.tmp" "$BRIDGES_FILE"
 }
 
+# --- Restart container if it is currently running ---
+restart_if_running() {
+    if (cd "$COMPOSE_DIR" && docker compose ps --format '{{.State}}' 2>/dev/null \
+            | grep -q running); then
+        log "Restarting arti container..."
+        (cd "$COMPOSE_DIR" && docker compose restart)
+        log "Done."
+    else
+        log "Container is not running — start it with: docker compose up -d"
+    fi
+}
+
 # -------------------------------------------------------------------------
 
 MODE="${1:-}"
 
 if [[ "$MODE" == "--check" ]]; then
     log "Checking current bridge reachability..."
-    if bridges_all_blocked; then
-        log "Result: all bridges are blocked."
+    if needs_refresh; then
+        log "Result: no reachable bridges (refresh needed)."
         exit 1
     else
         log "Result: at least one bridge is reachable."
@@ -98,11 +135,11 @@ fi
 
 if [[ "$MODE" != "--force" ]]; then
     log "Checking current bridge reachability..."
-    if ! bridges_all_blocked; then
-        log "At least one bridge is still reachable — no refresh needed."
+    if ! needs_refresh; then
+        log "At least one bridge is reachable — no refresh needed."
         exit 0
     fi
-    log "All bridges are blocked. Fetching fresh bridges..."
+    log "Fetching bridges..."
 else
     log "Force refresh — fetching fresh bridges..."
 fi
@@ -115,6 +152,4 @@ echo "$new_bridges" | sed 's/^/    /'
 write_bridges "$new_bridges"
 log "Updated $BRIDGES_FILE"
 
-log "Restarting arti container..."
-(cd "$COMPOSE_DIR" && docker compose restart)
-log "Done."
+restart_if_running
