@@ -42,6 +42,48 @@ read_bridges() {
     grep -vE '^[[:space:]]*(#|$)' /etc/arti/bridges.txt
 }
 
+# Return 0 (true) if every active bridge is TCP-unreachable; 1 if any responds.
+# $1 = newline-separated bridge lines.
+bridges_blocked() {
+    _bb_reachable=0
+    _bb_checked=0
+    while IFS= read -r _bb_line; do
+        [ -z "$_bb_line" ] && continue
+        _bb_addr=$(printf '%s' "$_bb_line" | awk '{print $2}')
+        case "$_bb_addr" in
+            \[*)  # [IPv6]:port
+                _bb_host=$(printf '%s' "$_bb_addr" | sed 's/^\[\(.*\)\]:.*/\1/')
+                _bb_port=$(printf '%s' "$_bb_addr" | sed 's/.*\]://')
+                ;;
+            *)    # IPv4:port
+                _bb_host=$(printf '%s' "$_bb_addr" | cut -d: -f1)
+                _bb_port=$(printf '%s' "$_bb_addr" | cut -d: -f2)
+                ;;
+        esac
+        _bb_checked=$((_bb_checked + 1))
+        if nc -z -w 5 "$_bb_host" "$_bb_port" 2>/dev/null; then
+            echo "entrypoint: bridge ${_bb_host}:${_bb_port} reachable"
+            _bb_reachable=$((_bb_reachable + 1))
+        else
+            echo "entrypoint: bridge ${_bb_host}:${_bb_port} unreachable"
+        fi
+    done <<EOF
+$1
+EOF
+    [ "$_bb_checked" -gt 0 ] && [ "$_bb_reachable" -eq 0 ]
+}
+
+# Fetch fresh obfs4 bridges from bridges.torproject.org.
+# Makes two requests and deduplicates; yields up to 4 bridge lines.
+# HTML-encodes '+' as '&#43;' in cert strings — sed decodes it back.
+fetch_fresh_bridges() {
+    { wget -qO- "https://bridges.torproject.org/bridges?transport=obfs4" 2>/dev/null
+      wget -qO- "https://bridges.torproject.org/bridges?transport=obfs4" 2>/dev/null
+    } | grep -oE 'obfs4 [^[:space:]]+ [0-9A-F]{40} cert=[^[:space:]]+ iat-mode=[0-9]+' \
+      | sed 's/&#43;/+/g' \
+      | sort -u
+}
+
 # Append a [bridges] section + lyrebird transport block to /tmp/arti.toml.
 # Bridge lines are quoted as TOML basic strings; their contents (base64 +
 # hex fingerprints + IP:port) never contain " or \ so no escaping is needed.
@@ -92,6 +134,22 @@ the container with: docker compose restart
 EOF
         exit 1
     fi
+
+    # If every configured bridge is unreachable, fetch fresh ones before
+    # starting Arti.  Fresh lines are written directly into /tmp/arti.toml
+    # for this run; bridges.txt (bind-mounted :ro) is not modified.
+    if bridges_blocked "$BRIDGES"; then
+        echo "entrypoint: all configured bridges are blocked — fetching fresh bridges..."
+        FRESH=$(fetch_fresh_bridges)
+        if [ -n "$FRESH" ]; then
+            echo "entrypoint: using fresh bridges:"
+            echo "$FRESH" | sed 's/^/  /'
+            BRIDGES="$FRESH"
+        else
+            echo "entrypoint: WARNING: could not fetch fresh bridges — proceeding with configured bridges."
+        fi
+    fi
+
     write_bridge_config "$BRIDGES"
 fi
 
@@ -120,10 +178,36 @@ HTTP_PORT="${HTTP_PORT}" SOCKS_PORT="${SOCKS_PORT}" \
     /usr/local/bin/tor-http-proxy &
 PROXY_PID=$!
 
-# If either process exits, bring down the other and let Docker restart
-# the container (restart: unless-stopped).
+# Health monitoring: run health-probe every HEALTH_CHECK_INTERVAL seconds.
+# HEALTH_GRACE seconds of slack at startup lets Arti finish bootstrapping
+# before the first check.  After HEALTH_MAX_FAILURES consecutive probe
+# failures the entrypoint exits so Docker restarts the container — the
+# startup bridge-refresh logic above then runs again with the failed
+# bridges already known-blocked.
+HEALTH_CHECK_INTERVAL=300  # probe every 5 min
+HEALTH_GRACE=300           # skip first check until 5+5=10 min after start
+HEALTH_MAX_FAILURES=3      # restart after 15 min of consecutive failure
+
+_h_tick=$((0 - HEALTH_GRACE))
+_h_fails=0
+
 while kill -0 "${ARTI_PID}" 2>/dev/null && kill -0 "${PROXY_PID}" 2>/dev/null; do
     sleep 5
+    _h_tick=$((_h_tick + 5))
+    if [ "$_h_tick" -ge "$HEALTH_CHECK_INTERVAL" ]; then
+        _h_tick=0
+        if HTTP_PORT="${HTTP_PORT}" /usr/local/bin/health-probe 2>/dev/null; then
+            [ "$_h_fails" -gt 0 ] && echo "entrypoint: circuit health recovered"
+            _h_fails=0
+        else
+            _h_fails=$((_h_fails + 1))
+            echo "entrypoint: health probe failed (${_h_fails}/${HEALTH_MAX_FAILURES})"
+            if [ "$_h_fails" -ge "$HEALTH_MAX_FAILURES" ]; then
+                echo "entrypoint: circuit health failing — restarting to refresh bridges"
+                cleanup 1
+            fi
+        fi
+    fi
 done
 
 cleanup 1
